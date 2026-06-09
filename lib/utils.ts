@@ -9,5 +9,5 @@ export const formatPrice = (value: number): string => {
     return `₹${l}L`;
   }
 
-  return `₹${value.toLocaleString()}`;
+  return `₹${value.toLocaleString("en-IN")}`;
 };

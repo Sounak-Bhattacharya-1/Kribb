@@ -37,7 +37,11 @@ export default function PropertyCard({
       onPress={() => router.push(`/(root)/property/${property.id}`)}
     >
       <Image
-        source={{ uri: property.images[0] }}
+        source={
+          property.images.length > 0
+            ? { uri: property.images[0] }
+            : require("@/assets/images/kribb.png")
+        }
         style={{ width: 112, height: 112 }}
         resizeMode="cover"
       />
@@ -72,6 +76,7 @@ export default function PropertyCard({
             flexDirection: "row",
             alignItems: "center",
             justifyContent: "space-between",
+            gap: 20,
           }}
         >
           <Text
@@ -107,7 +112,7 @@ export default function PropertyCard({
             </View>
           )}
 
-          <View style={{ flexDirection: "row", gap: 14 }}>
+          <View style={{ flexDirection: "row", gap: 10 }}>
             <View
               style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
             >
