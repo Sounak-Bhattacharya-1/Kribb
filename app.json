@@ -31,6 +31,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withAndroidPackaging",
       "expo-router",
       [
         "expo-location",
@@ -47,16 +48,6 @@
           "backgroundColor": "#ffffff",
           "dark": {
             "backgroundColor": "#000000"
-          }
-        }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "packagingOptions": {
-              "excludes": ["META-INF/versions/9/OSGI-INF/MANIFEST.MF"]
-            }
           }
         }
       ]
