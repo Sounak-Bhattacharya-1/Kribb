@@ -1,10 +1,801 @@
-import React from "react";
-import { Text, View } from "react-native";
+import { useSupabase } from "@/hooks/useSupabase";
+import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
+import { useRouter } from "expo-router";
+import { useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-export default function create() {
-  return (
-    <View>
-      <Text>create</Text>
+const TYPES = ["apartment", "house", "villa", "studio"] as const;
+type PropertyType = (typeof TYPES)[number];
+
+const MIN_PRICE = 1;
+const MAX_PRICE = 999_999_999;
+
+interface FormState {
+  title: string;
+  description: string;
+  price: string;
+  type: PropertyType;
+  bedrooms: number;
+  bathrooms: number;
+  areaSqft: string;
+  address: string;
+  city: string;
+  latitude: string;
+  longitude: string;
+  isFeatured: boolean;
+  images: string[];
+  localImages: string[];
+}
+
+const INITIAL_FORM: FormState = {
+  title: "",
+  description: "",
+  price: "",
+  type: "apartment",
+  bedrooms: 1,
+  bathrooms: 1,
+  areaSqft: "",
+  address: "",
+  city: "",
+  latitude: "",
+  longitude: "",
+  isFeatured: false,
+  images: [],
+  localImages: [],
+};
+
+export default function CreatePropertyScreen() {
+  const router = useRouter();
+  const authSupabase = useSupabase();
+
+  const [form, setForm] = useState<FormState>(INITIAL_FORM);
+
+  // Loading states
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [detectingLocation, setDetectingLocation] = useState(false);
+
+  const updateForm = (fields: Partial<FormState>) =>
+    setForm((prev) => ({ ...prev, ...fields }));
+
+  // ─── Image Picker ──────────────────────────────────────────
+  const handlePickImages = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert(
+        "Permission Required",
+        "Please allow access to your photo library.",
+      );
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: "images",
+      allowsMultipleSelection: true,
+      quality: 0.7,
+      base64: true,
+      selectionLimit: 6,
+    });
+
+    if (result.canceled) return;
+
+    setUploadingImages(true);
+
+    const uploadedUrls: string[] = [];
+    const previewUris: string[] = [];
+
+    for (const asset of result.assets) {
+      try {
+        const filename = `property_${Date.now()}_${Math.random()
+          .toString(36)
+          .slice(2)}.jpg`;
+
+        const base64 = asset.base64!;
+        const buffer = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+
+        const { error } = await authSupabase.storage
+          .from("property-images")
+          .upload(filename, buffer, {
+            contentType: "image/jpeg",
+            upsert: false,
+          });
+
+        if (error) throw error;
+
+        const { data: urlData } = authSupabase.storage
+          .from("property-images")
+          .getPublicUrl(filename);
+
+        uploadedUrls.push(urlData.publicUrl);
+        previewUris.push(asset.uri);
+      } catch (err) {
+        console.error("Upload error:", err);
+        Alert.alert("Upload Failed", "One or more images failed to upload.");
+      }
+    }
+
+    updateForm({
+      images: [...form.images, ...uploadedUrls],
+      localImages: [...form.localImages, ...previewUris],
+    });
+    setUploadingImages(false);
+  };
+
+  const handleRemoveImage = (index: number) => {
+    updateForm({
+      images: form.images.filter((_, i) => i !== index),
+      localImages: form.localImages.filter((_, i) => i !== index),
+    });
+  };
+
+  // ─── Location Detection ────────────────────────────────────
+  const handleDetectLocation = async () => {
+    setDetectingLocation(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission Denied",
+          "Location permission is required to detect coordinates.",
+        );
+        return;
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      updateForm({
+        latitude: String(location.coords.latitude),
+        longitude: String(location.coords.longitude),
+      });
+    } catch (err) {
+      Alert.alert("Error", "Could not detect location. Enter manually.");
+    } finally {
+      setDetectingLocation(false);
+    }
+  };
+
+  // ─── Submit ────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    if (!form.title.trim())
+      return Alert.alert("Validation", "Title is required.");
+
+    if (!form.price.trim())
+      return Alert.alert("Validation", "Price is required.");
+
+    const priceNum = Number(form.price);
+    if (isNaN(priceNum) || priceNum < MIN_PRICE)
+      return Alert.alert("Validation", "Price must be greater than ₹0.");
+    if (priceNum > MAX_PRICE)
+      return Alert.alert(
+        "Validation",
+        `Price cannot exceed ₹${MAX_PRICE.toLocaleString("en-IN")}.`,
+      );
+
+    if (!form.address.trim())
+      return Alert.alert("Validation", "Address is required.");
+    if (!form.city.trim())
+      return Alert.alert("Validation", "City is required.");
+    if (form.images.length === 0)
+      return Alert.alert("Validation", "Please upload at least one image.");
+
+    setSubmitting(true);
+
+    const { error } = await authSupabase.from("properties").insert({
+      title: form.title.trim(),
+      description: form.description.trim(),
+      price: priceNum,
+      type: form.type,
+      bedrooms: form.bedrooms,
+      bathrooms: form.bathrooms,
+      area_sqft: form.areaSqft ? Number(form.areaSqft) : null,
+      address: form.address.trim(),
+      city: form.city.trim(),
+      latitude: form.latitude ? Number(form.latitude) : null,
+      longitude: form.longitude ? Number(form.longitude) : null,
+      images: form.images,
+      is_featured: form.isFeatured,
+      is_sold: false,
+    });
+
+    setSubmitting(false);
+
+    if (error) {
+      Alert.alert("Error", "Failed to create property. Please try again.");
+      console.error(error);
+      return;
+    }
+
+    setForm(INITIAL_FORM);
+    Alert.alert("Success! 🎉", "Property listed successfully.", [
+      { text: "OK", onPress: () => router.replace("/(root)/(tabs)") },
+    ]);
+  };
+
+  // ─── UI Helpers ────────────────────────────────────────────
+  const Counter = ({
+    label,
+    value,
+    onChange,
+  }: {
+    label: string;
+    value: number;
+    onChange: (v: number) => void;
+  }) => (
+    <View style={{ flex: 1 }}>
+      <Text style={styles.label}>{label}</Text>
+      <View style={styles.counterContainer}>
+        <TouchableOpacity
+          onPress={() => onChange(Math.max(1, value - 1))}
+          style={styles.counterButton}
+        >
+          <Ionicons name="remove" size={18} color="#374151" />
+        </TouchableOpacity>
+        <Text style={styles.counterValue}>{value}</Text>
+        <TouchableOpacity
+          onPress={() => onChange(value + 1)}
+          style={styles.counterButton}
+        >
+          <Ionicons name="add" size={18} color="#374151" />
+        </TouchableOpacity>
+      </View>
     </View>
   );
+
+  const Toggle = ({
+    label,
+    value,
+    onChange,
+    description,
+  }: {
+    label: string;
+    value: boolean;
+    onChange: (v: boolean) => void;
+    description?: string;
+  }) => (
+    <TouchableOpacity
+      onPress={() => onChange(!value)}
+      style={[
+        styles.toggleContainer,
+        value ? styles.toggleContainerActive : styles.toggleContainerInactive,
+      ]}
+    >
+      <View style={{ flex: 1, marginRight: 12 }}>
+        <Text
+          style={[
+            styles.toggleLabel,
+            value ? styles.toggleLabelActive : styles.toggleLabelInactive,
+          ]}
+        >
+          {label}
+        </Text>
+        {description && (
+          <Text style={styles.toggleDescription}>{description}</Text>
+        )}
+      </View>
+      <View
+        style={[
+          styles.toggleCheckbox,
+          value ? styles.toggleCheckboxActive : styles.toggleCheckboxInactive,
+        ]}
+      >
+        {value && <Ionicons name="checkmark" size={14} color="white" />}
+      </View>
+    </TouchableOpacity>
+  );
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1 }}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Add Property</Text>
+        </View>
+
+        <ScrollView
+          contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Images */}
+          <View style={styles.section}>
+            <Text style={styles.label}>
+              Photos <Text style={styles.labelMuted}>(up to 6)</Text>
+            </Text>
+
+            <View style={styles.imageWrap}>
+              {form.localImages.map((uri, index) => (
+                <View key={index} style={{ position: "relative" }}>
+                  <Image
+                    source={{ uri }}
+                    style={styles.imageThumb}
+                    resizeMode="cover"
+                  />
+                  {index === 0 && (
+                    <View style={styles.coverBadge}>
+                      <Text style={styles.coverBadgeText}>COVER</Text>
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    onPress={() => handleRemoveImage(index)}
+                    style={styles.removeImageButton}
+                  >
+                    <Ionicons name="close" size={11} color="white" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+
+              {form.localImages.length < 6 && (
+                <TouchableOpacity
+                  onPress={handlePickImages}
+                  disabled={uploadingImages}
+                  style={styles.addImageButton}
+                >
+                  {uploadingImages ? (
+                    <ActivityIndicator size="small" color="#2563EB" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="camera-outline"
+                        size={22}
+                        color="#9CA3AF"
+                      />
+                      <Text style={styles.addImageText}>Add</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {/* Basic Info */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Title</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Modern 3BHK in Bandra"
+              placeholderTextColor="#9CA3AF"
+              value={form.title}
+              onChangeText={(v) => updateForm({ title: v })}
+            />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.label}>Description</Text>
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              placeholder="Describe the property..."
+              placeholderTextColor="#9CA3AF"
+              value={form.description}
+              onChangeText={(v) => updateForm({ description: v })}
+              multiline
+              textAlignVertical="top"
+            />
+          </View>
+
+          {/* Price */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Price (₹)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 5000000"
+              placeholderTextColor="#9CA3AF"
+              value={form.price}
+              onChangeText={(v) => updateForm({ price: v })}
+              keyboardType="numeric"
+            />
+            <Text style={styles.hintText}>
+              Valid range: ₹1 – ₹{MAX_PRICE.toLocaleString("en-IN")}
+            </Text>
+          </View>
+
+          {/* Property Type */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Property Type</Text>
+            <View style={styles.typeWrap}>
+              {TYPES.map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  onPress={() => updateForm({ type: t })}
+                  style={[
+                    styles.typeChip,
+                    form.type === t
+                      ? styles.typeChipActive
+                      : styles.typeChipInactive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.typeChipText,
+                      form.type === t
+                        ? styles.typeChipTextActive
+                        : styles.typeChipTextInactive,
+                    ]}
+                  >
+                    {t.charAt(0).toUpperCase() + t.slice(1)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
+          {/* Bedrooms / Bathrooms */}
+          <View style={styles.row}>
+            <Counter
+              label="Bedrooms"
+              value={form.bedrooms}
+              onChange={(v) => updateForm({ bedrooms: v })}
+            />
+            <Counter
+              label="Bathrooms"
+              value={form.bathrooms}
+              onChange={(v) => updateForm({ bathrooms: v })}
+            />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.label}>Area (sq ft)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 1200"
+              placeholderTextColor="#9CA3AF"
+              value={form.areaSqft}
+              onChangeText={(v) => updateForm({ areaSqft: v })}
+              keyboardType="numeric"
+            />
+          </View>
+
+          {/* Location */}
+          <View style={styles.section}>
+            <Text style={styles.label}>Address</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Street address"
+              placeholderTextColor="#9CA3AF"
+              value={form.address}
+              onChangeText={(v) => updateForm({ address: v })}
+            />
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.label}>City</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Mumbai"
+              placeholderTextColor="#9CA3AF"
+              value={form.city}
+              onChangeText={(v) => updateForm({ city: v })}
+            />
+          </View>
+
+          {/* Coordinates */}
+          <View style={styles.section}>
+            <View style={styles.coordsHeader}>
+              <Text style={styles.label}>Coordinates</Text>
+              <TouchableOpacity
+                onPress={handleDetectLocation}
+                disabled={detectingLocation}
+                style={styles.detectButton}
+              >
+                {detectingLocation ? (
+                  <ActivityIndicator size="small" color="#2563EB" />
+                ) : (
+                  <Ionicons name="locate-outline" size={13} color="#2563EB" />
+                )}
+                <Text style={styles.detectButtonText}>
+                  {detectingLocation ? "Detecting..." : "Detect Location"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Latitude"
+                  placeholderTextColor="#9CA3AF"
+                  value={form.latitude}
+                  onChangeText={(v) => updateForm({ latitude: v })}
+                  keyboardType="numeric"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Longitude"
+                  placeholderTextColor="#9CA3AF"
+                  value={form.longitude}
+                  onChangeText={(v) => updateForm({ longitude: v })}
+                  keyboardType="numeric"
+                />
+              </View>
+            </View>
+          </View>
+
+          {/* Toggles */}
+          <View style={{ gap: 12, marginBottom: 20 }}>
+            <Toggle
+              label="Featured Property"
+              description="Show this in the Featured section on home"
+              value={form.isFeatured}
+              onChange={(v) => updateForm({ isFeatured: v })}
+            />
+          </View>
+
+          {/* Submit */}
+          <TouchableOpacity
+            onPress={handleSubmit}
+            disabled={submitting || uploadingImages}
+            style={[
+              styles.submitButton,
+              { opacity: submitting || uploadingImages ? 0.7 : 1 },
+            ]}
+          >
+            {submitting ? (
+              <ActivityIndicator color="white" />
+            ) : (
+              <Text style={styles.submitButtonText}>List Property</Text>
+            )}
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
 }
+
+const styles = {
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F9FAFB",
+  },
+  header: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 12,
+  },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: "700" as const,
+    color: "#111827",
+    flex: 1,
+  },
+  section: {
+    marginBottom: 20,
+  },
+  row: {
+    flexDirection: "row" as const,
+    gap: 16,
+    marginBottom: 20,
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: "600" as const,
+    color: "#374151",
+    marginBottom: 6,
+  },
+  labelMuted: {
+    color: "#9CA3AF",
+    fontWeight: "400" as const,
+  },
+  hintText: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    marginTop: 6,
+    marginLeft: 4,
+  },
+  input: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: "#1F2937",
+  },
+  textArea: {
+    height: 96,
+  },
+  imageWrap: {
+    flexDirection: "row" as const,
+    flexWrap: "wrap" as const,
+    gap: 12,
+  },
+  imageThumb: {
+    width: 96,
+    height: 96,
+    borderRadius: 16,
+  },
+  coverBadge: {
+    position: "absolute" as const,
+    top: 4,
+    left: 4,
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  coverBadgeText: {
+    color: "#FFFFFF",
+    fontSize: 9,
+    fontWeight: "700" as const,
+  },
+  removeImageButton: {
+    position: "absolute" as const,
+    top: -8,
+    right: -8,
+    width: 20,
+    height: 20,
+    backgroundColor: "#EF4444",
+    borderRadius: 999,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  addImageButton: {
+    width: 96,
+    height: 96,
+    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 2,
+    borderStyle: "dashed" as const,
+    borderColor: "#D1D5DB",
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  addImageText: {
+    color: "#9CA3AF",
+    fontSize: 12,
+    marginTop: 4,
+  },
+  typeWrap: {
+    flexDirection: "row" as const,
+    flexWrap: "wrap" as const,
+    gap: 8,
+  },
+  typeChip: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  typeChipActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  typeChipInactive: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+  },
+  typeChipText: {
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+  typeChipTextActive: {
+    color: "#FFFFFF",
+  },
+  typeChipTextInactive: {
+    color: "#4B5563",
+  },
+  counterContainer: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    overflow: "hidden" as const,
+  },
+  counterButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  counterValue: {
+    flex: 1,
+    textAlign: "center" as const,
+    color: "#1F2937",
+    fontWeight: "700" as const,
+    fontSize: 16,
+  },
+  coordsHeader: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "space-between" as const,
+    marginBottom: 6,
+  },
+  detectButton: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    gap: 4,
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  detectButtonText: {
+    color: "#2563EB",
+    fontSize: 12,
+    fontWeight: "600" as const,
+  },
+  toggleContainer: {
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    justifyContent: "space-between" as const,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  toggleContainerActive: {
+    backgroundColor: "#EFF6FF",
+    borderColor: "#BFDBFE",
+  },
+  toggleContainerInactive: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+  },
+  toggleLabel: {
+    fontWeight: "600" as const,
+  },
+  toggleLabelActive: {
+    color: "#1D4ED8",
+  },
+  toggleLabelInactive: {
+    color: "#374151",
+  },
+  toggleDescription: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    marginTop: 2,
+  },
+  toggleCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    borderWidth: 2,
+    alignItems: "center" as const,
+    justifyContent: "center" as const,
+  },
+  toggleCheckboxActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  toggleCheckboxInactive: {
+    borderColor: "#D1D5DB",
+  },
+  submitButton: {
+    backgroundColor: "#2563EB",
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: "center" as const,
+    shadowColor: "#2563EB",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  submitButtonText: {
+    color: "#FFFFFF",
+    fontWeight: "700" as const,
+    fontSize: 16,
+  },
+};

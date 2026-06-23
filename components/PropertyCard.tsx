@@ -1,3 +1,4 @@
+import { useSavedProperty } from "@/hooks/useSavedProperty";
 import { formatPrice } from "@/lib/utils";
 import { Property } from "@/types";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,7 +17,10 @@ export default function PropertyCard({
 }) {
   const router = useRouter();
 
-  const isSaved = true;
+  const { isSaved, saveLoading, toggleSave } = useSavedProperty(
+    property.id,
+    onUnsave,
+  );
 
   return (
     <TouchableOpacity
@@ -135,6 +139,8 @@ export default function PropertyCard({
       </View>
 
       <TouchableOpacity
+        onPress={toggleSave}
+        disabled={saveLoading}
         style={{ width: 40, paddingTop: 12, alignItems: "center" }}
       >
         <Ionicons
